@@ -21,10 +21,10 @@ fi
 
 # Синхронизация папок (используем rsync для эффективной синхронизации)
 echo "Синхронизация /opt/n8n_vps..."
-rsync -av --delete $N8N_SOURCE/ $N8N_DEST/
+rsync -av --delete --exclude="data/database.sqlite" --exclude="data/*.log" --exclude="data/*.sqlite" --exclude="data/nodes/node_modules" $N8N_SOURCE/ $N8N_DEST/
 
 echo "Синхронизация /root/projects..."
-rsync -av --delete $PROJECTS_SOURCE/ $PROJECTS_DEST/
+rsync -av --delete --exclude="node_modules" --exclude="*.sqlite" --exclude="*.db" --exclude="*.log" $PROJECTS_SOURCE/ $PROJECTS_DEST/
 
 # Добавляем изменения в Git
 git add .
