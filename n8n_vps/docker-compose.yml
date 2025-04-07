@@ -1,0 +1,23 @@
+services:
+  n8n_personal:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: n8n_personal
+    restart: always
+    ports:
+      - "127.0.0.1:5678:5678"
+    environment:
+      - WEBHOOK_URL=https://personalassist.online/
+      - N8N_USE_X_FORWARDED_HEADERS=true
+      - N8N_TRUSTED_PROXIES=127.0.0.1
+      - N8N_PROTOCOL=http
+      - N8N_PORT=5678
+      - TZ=Asia/Ho_Chi_Minh
+      - N8N_RUNNERS_ENABLED=true
+      - N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS=true
+      - NODE_PATH=/usr/local/lib/node_modules:/usr/local/lib/node_modules/node_modules
+    volumes:
+      - /opt/n8n_vps/data:/home/node/.n8n
+      - /opt/n8n_vps/db:/home/node/.n8n/data
+      - /opt/n8n_vps/sqlite:/home/node/sqlite

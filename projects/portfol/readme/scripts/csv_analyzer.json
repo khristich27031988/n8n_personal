@@ -1,0 +1,200 @@
+{
+  "name": "CSV Analyzer",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "csv-analyzer",
+        "options": {
+          "rawBody": true
+        },
+        "responseMode": "responseNode"
+      },
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [
+        250,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Получение файла из запроса\nconst fileData = $input.item.json.fileData || $input.item.binary?.file?.data;\nconst fileName = $input.item.json.fileName || $input.item.binary?.file?.fileName || 'uploaded_file.csv';\n\nif (!fileData) {\n  throw new Error('No file data received');\n}\n\n// Декодирование Base64 данных файла\nlet csvContent;\nif (typeof fileData === 'string') {\n  // Если данные уже в виде строки\n  csvContent = fileData;\n} else {\n  // Если данные в бинарном формате, декодируем из Base64\n  const buffer = Buffer.from(fileData, 'base64');\n  csvContent = buffer.toString('utf-8');\n}\n\n// Парсинг CSV\nconst lines = csvContent.split('\\n');\nconst headers = lines[0].split(',').map(header => header.trim());\n\n// Получение образца данных (первые 5 строк)\nconst sampleData = [];\nfor (let i = 1; i < Math.min(lines.length, 6); i++) {\n  if (lines[i].trim() === '') continue;\n  \n  const values = lines[i].split(',');\n  const row = {};\n  \n  headers.forEach((header, index) => {\n    row[header] = values[index] ? values[index].trim() : '';\n  });\n  \n  sampleData.push(row);\n}\n\n// Определение типов данных\nconst columnTypes = {};\nheaders.forEach(header => {\n  // Проверяем типы данных в образце\n  const values = sampleData.map(row => row[header]).filter(val => val !== '');\n  \n  // Проверка на числовой тип\n  const isNumeric = values.every(val => !isNaN(Number(val)));\n  \n  // Проверка на дату\n  const isDate = values.every(val => !isNaN(Date.parse(val)));\n  \n  if (isNumeric) {\n    columnTypes[header] = 'number';\n  } else if (isDate) {\n    columnTypes[header] = 'date';\n  } else {\n    columnTypes[header] = 'string';\n  }\n});\n\n// Создание уникального ID для файла\nconst fileId = `file_${Date.now()}_${Math.floor(Math.random() * 1000)}`;\n\n// Возвращаем результаты\nreturn {\n  json: {\n    fileId,\n    fileName,\n    headers,\n    columnTypes,\n    sampleData,\n    totalRows: lines.length - 1\n  }\n};"
+      },
+      "name": "Parse CSV",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        450,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Подготовка промпта для LLM\nconst { headers, sampleData, columnTypes, fileId, fileName } = $input.item.json;\n\n// Форматирование образца данных для лучшей читаемости\nconst formattedSampleData = sampleData.map(row => {\n  return Object.entries(row)\n    .map(([key, value]) => `${key}: ${value}`)\n    .join(', ');\n}).join('\\n');\n\n// Форматирование типов столбцов\nconst formattedColumnTypes = Object.entries(columnTypes)\n  .map(([column, type]) => `${column}: ${type}`)\n  .join('\\n');\n\n// Создание промпта для LLM\nconst prompt = `Проанализируй структуру CSV файла \"${fileName}\":\n\nЗаголовки: ${headers.join(', ')}\n\nПредполагаемые типы данных:\n${formattedColumnTypes}\n\nОбразец данных (первые строки):\n${formattedSampleData}\n\nПредоставь следующую информацию в JSON формате:\n1. Уточненные типы данных для каждого столбца\n2. Потенциальные проблемы с данными\n3. Рекомендуемые трансформации для каждого столбца\n4. Предложения по визуализации\n5. Потенциальные бизнес-инсайты\n\nОтвет должен быть в формате JSON с ключами:\n{\n  \"column_types\": {\"column_name\": \"data_type\", ...},\n  \"potential_issues\": [\"issue1\", \"issue2\", ...],\n  \"transformations\": {\"column_name\": [{\"id\": \"transform_1\", \"type\": \"transformation_type\", \"description\": \"description\", \"parameters\": {...}}, ...], ...},\n  \"visualizations\": [{\"type\": \"chart_type\", \"description\": \"description\", \"columns\": [\"col1\", \"col2\"], \"parameters\": {...}}, ...],\n  \"insights\": [\"insight1\", \"insight2\", ...]\n}`;\n\nreturn {\n  json: {\n    fileId,\n    fileName,\n    prompt\n  }\n};"
+      },
+      "name": "Prepare LLM Prompt",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        650,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "url": "https://api.qwen.com/v1/chat",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "allowUnauthorizedCerts": true
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "prompt",
+              "value": "={{ $json.prompt }}"
+            },
+            {
+              "name": "max_tokens",
+              "value": 2000
+            },
+            {
+              "name": "temperature",
+              "value": 0.2
+            },
+            {
+              "name": "format",
+              "value": "json"
+            }
+          ]
+        }
+      },
+      "name": "LLM API Request",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 3,
+      "position": [
+        850,
+        300
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "1",
+          "name": "Qwen API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "functionCode": "// Обработка ответа от LLM API\nconst { fileId, fileName } = $input.item.json;\nlet llmResponse = $input.item.json.answer || $input.item.json;\n\n// Проверка, является ли ответ строкой JSON\nif (typeof llmResponse === 'string') {\n  try {\n    llmResponse = JSON.parse(llmResponse);\n  } catch (error) {\n    // Если не удалось распарсить JSON, пытаемся извлечь JSON из текста\n    const jsonMatch = llmResponse.match(/\\{[\\s\\S]*\\}/);\n    if (jsonMatch) {\n      try {\n        llmResponse = JSON.parse(jsonMatch[0]);\n      } catch (e) {\n        // Если все равно не удалось, возвращаем ошибку\n        return {\n          json: {\n            fileId,\n            fileName,\n            error: 'Failed to parse LLM response as JSON',\n            rawResponse: llmResponse\n          }\n        };\n      }\n    }\n  }\n}\n\n// Добавляем идентификаторы к трансформациям, если их нет\nif (llmResponse.transformations) {\n  Object.keys(llmResponse.transformations).forEach(column => {\n    llmResponse.transformations[column] = llmResponse.transformations[column].map((transform, index) => {\n      if (!transform.id) {\n        transform.id = `${column}_transform_${index}`;\n      }\n      return transform;\n    });\n  });\n}\n\n// Возвращаем результаты анализа\nreturn {\n  json: {\n    fileId,\n    fileName,\n    ...llmResponse\n  }\n};"
+      },
+      "name": "Process LLM Response",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        1050,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "filePath": "={{ '/portfol/data/analyzed/' + $json.fileId + '_analysis.json' }}",
+        "fileName": "={{ $json.fileId + '_analysis.json' }}",
+        "options": {
+          "encoding": "utf8"
+        }
+      },
+      "name": "Save Analysis",
+      "type": "n8n-nodes-base.writeFile",
+      "typeVersion": 1,
+      "position": [
+        1250,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}",
+        "options": {}
+      },
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        1450,
+        300
+      ]
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Parse CSV",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse CSV": {
+      "main": [
+        [
+          {
+            "node": "Prepare LLM Prompt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare LLM Prompt": {
+      "main": [
+        [
+          {
+            "node": "LLM API Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "LLM API Request": {
+      "main": [
+        [
+          {
+            "node": "Process LLM Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Process LLM Response": {
+      "main": [
+        [
+          {
+            "node": "Save Analysis",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save Analysis": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  }
+}

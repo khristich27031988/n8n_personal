@@ -1,0 +1,288 @@
+{
+  "name": "Insights Generator",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "generate-insights",
+        "options": {
+          "rawBody": true
+        },
+        "responseMode": "responseNode"
+      },
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [
+        250,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Получение параметров запроса\nconst { fileId, tableName, question } = $input.item.json;\n\n// Проверка наличия необходимых параметров\nif (!fileId && !tableName) {\n  throw new Error('Either fileId or tableName is required');\n}\n\n// Определение имени таблицы\nlet tableToQuery;\nif (tableName) {\n  tableToQuery = tableName;\n} else {\n  // Если указан только fileId, формируем имя таблицы\n  tableToQuery = `data_${fileId.replace(/[^a-zA-Z0-9]/g, '_')}`;\n}\n\n// Формирование SQL запроса для получения данных\nconst sqlQuery = `SELECT * FROM ${tableToQuery} LIMIT 1000;`;\n\n// Формирование SQL запроса для получения информации о структуре таблицы\nconst tableInfoQuery = `PRAGMA table_info(${tableToQuery});`;\n\nreturn {\n  json: {\n    fileId,\n    tableName: tableToQuery,\n    sqlQuery,\n    tableInfoQuery,\n    question: question || 'Предоставь ключевые бизнес-инсайты на основе этих данных'\n  }\n};"
+      },
+      "name": "Prepare Queries",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        450,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "={{ $json.tableInfoQuery }}"
+      },
+      "name": "Get Table Structure",
+      "type": "n8n-nodes-base.sqlite",
+      "typeVersion": 1,
+      "position": [
+        650,
+        300
+      ],
+      "credentials": {
+        "sqlite": {
+          "id": "1",
+          "name": "SQLite"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "={{ $json.sqlQuery }}"
+      },
+      "name": "Get Table Data",
+      "type": "n8n-nodes-base.sqlite",
+      "typeVersion": 1,
+      "position": [
+        650,
+        450
+      ],
+      "credentials": {
+        "sqlite": {
+          "id": "1",
+          "name": "SQLite"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "functionCode": "// Получение данных из предыдущих шагов\nconst { tableName, question } = $input.item.json;\n\n// Получение структуры таблицы\nconst tableStructure = $input.item.json.data;\n\n// Получение данных таблицы\nconst tableData = $('Get Table Data').item.json.data;\n\n// Определение типов столбцов на основе структуры таблицы\nconst columnTypes = {};\nif (Array.isArray(tableStructure)) {\n  tableStructure.forEach(column => {\n    columnTypes[column.name] = column.type;\n  });\n}\n\n// Расчет базовой статистики по данным\nconst stats = {};\nif (Array.isArray(tableData) && tableData.length > 0) {\n  // Получение всех столбцов\n  const columns = Object.keys(tableData[0]);\n  \n  columns.forEach(column => {\n    // Инициализация статистики для столбца\n    stats[column] = {\n      count: tableData.length,\n      nullCount: 0,\n      uniqueValues: new Set(),\n      min: null,\n      max: null,\n      sum: 0,\n      mean: 0\n    };\n    \n    // Сбор статистики\n    tableData.forEach(row => {\n      const value = row[column];\n      \n      // Подсчет null значений\n      if (value === null || value === undefined || value === '') {\n        stats[column].nullCount++;\n      } else {\n        // Добавление уникальных значений\n        stats[column].uniqueValues.add(value);\n        \n        // Для числовых столбцов рассчитываем мин/макс/сумму\n        if (!isNaN(Number(value))) {\n          const numValue = Number(value);\n          \n          if (stats[column].min === null || numValue < stats[column].min) {\n            stats[column].min = numValue;\n          }\n          \n          if (stats[column].max === null || numValue > stats[column].max) {\n            stats[column].max = numValue;\n          }\n          \n          stats[column].sum += numValue;\n        }\n      }\n    });\n    \n    // Преобразование Set в количество уникальных значений\n    stats[column].uniqueCount = stats[column].uniqueValues.size;\n    delete stats[column].uniqueValues;\n    \n    // Расчет среднего для числовых столбцов\n    if (stats[column].min !== null) {\n      stats[column].mean = stats[column].sum / (stats[column].count - stats[column].nullCount);\n    }\n  });\n}\n\n// Подготовка данных для LLM\nconst sampleData = tableData.slice(0, 10); // Первые 10 строк для примера\n\n// Создание промпта для LLM\nconst prompt = `Проанализируй данные из таблицы \"${tableName}\" и ответь на вопрос: \"${question}\"\n\nСтруктура таблицы:\n${Object.entries(columnTypes).map(([col, type]) => `${col}: ${type}`).join('\\n')}\n\nСтатистика по данным:\n${JSON.stringify(stats, null, 2)}\n\nПример данных (первые 10 строк):\n${JSON.stringify(sampleData, null, 2)}\n\nПредоставь следующую информацию в JSON формате:\n1. Ответ на вопрос пользователя\n2. Ключевые инсайты из данных\n3. Рекомендации по визуализации\n4. Потенциальные бизнес-решения на основе данных\n\nОтвет должен быть в формате JSON с ключами:\n{\n  \"answer\": \"Подробный ответ на вопрос пользователя\",\n  \"insights\": [\"инсайт1\", \"инсайт2\", ...],\n  \"visualizations\": [{\"type\": \"chart_type\", \"description\": \"description\", \"columns\": [\"col1\", \"col2\"], \"parameters\": {...}}, ...],\n  \"recommendations\": [\"рекомендация1\", \"рекомендация2\", ...]\n}`;\n\nreturn {\n  json: {\n    tableName,\n    question,\n    prompt,\n    sampleData,\n    stats\n  }\n};"
+      },
+      "name": "Prepare LLM Prompt",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        850,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "url": "https://api.qwen.com/v1/chat",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "allowUnauthorizedCerts": true
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "prompt",
+              "value": "={{ $json.prompt }}"
+            },
+            {
+              "name": "max_tokens",
+              "value": 2000
+            },
+            {
+              "name": "temperature",
+              "value": 0.2
+            },
+            {
+              "name": "format",
+              "value": "json"
+            }
+          ]
+        }
+      },
+      "name": "LLM API Request",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 3,
+      "position": [
+        1050,
+        300
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "1",
+          "name": "Qwen API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "functionCode": "// Обработка ответа от LLM API\nconst { tableName, question } = $input.item.json;\nlet llmResponse = $input.item.json.answer || $input.item.json;\n\n// Проверка, является ли ответ строкой JSON\nif (typeof llmResponse === 'string') {\n  try {\n    llmResponse = JSON.parse(llmResponse);\n  } catch (error) {\n    // Если не удалось распарсить JSON, пытаемся извлечь JSON из текста\n    const jsonMatch = llmResponse.match(/\\{[\\s\\S]*\\}/);\n    if (jsonMatch) {\n      try {\n        llmResponse = JSON.parse(jsonMatch[0]);\n      } catch (e) {\n        // Если все равно не удалось, возвращаем ошибку\n        return {\n          json: {\n            tableName,\n            question,\n            error: 'Failed to parse LLM response as JSON',\n            rawResponse: llmResponse\n          }\n        };\n      }\n    }\n  }\n}\n\n// Создание уникального ID для результатов\nconst insightId = `insight_${Date.now()}_${Math.floor(Math.random() * 1000)}`;\n\n// Возвращаем результаты анализа\nreturn {\n  json: {\n    insightId,\n    tableName,\n    question,\n    timestamp: new Date().toISOString(),\n    ...llmResponse\n  }\n};"
+      },
+      "name": "Process LLM Response",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        1250,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "filePath": "={{ '/portfol/data/insights/' + $json.insightId + '.json' }}",
+        "fileName": "={{ $json.insightId + '.json' }}",
+        "options": {
+          "encoding": "utf8"
+        }
+      },
+      "name": "Save Insights",
+      "type": "n8n-nodes-base.writeFile",
+      "typeVersion": 1,
+      "position": [
+        1450,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Подготовка данных для визуализации\nconst { insightId, tableName, question, answer, insights, visualizations, recommendations } = $input.item.json;\n\n// Подготовка данных для Streamlit\nconst streamlitData = {\n  insightId,\n  tableName,\n  question,\n  answer,\n  insights,\n  visualizations,\n  recommendations,\n  timestamp: $input.item.json.timestamp\n};\n\n// Возвращаем данные для ответа\nreturn {\n  json: streamlitData\n};"
+      },
+      "name": "Prepare Visualization Data",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        1650,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}",
+        "options": {}
+      },
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        1850,
+        300
+      ]
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Prepare Queries",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Queries": {
+      "main": [
+        [
+          {
+            "node": "Get Table Structure",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Get Table Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Table Structure": {
+      "main": [
+        [
+          {
+            "node": "Prepare LLM Prompt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Table Data": {
+      "main": [
+        [
+          {
+            "node": "Prepare LLM Prompt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare LLM Prompt": {
+      "main": [
+        [
+          {
+            "node": "LLM API Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "LLM API Request": {
+      "main": [
+        [
+          {
+            "node": "Process LLM Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Process LLM Response": {
+      "main": [
+        [
+          {
+            "node": "Save Insights",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save Insights": {
+      "main": [
+        [
+          {
+            "node": "Prepare Visualization Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Visualization Data": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  }
+}

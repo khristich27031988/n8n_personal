@@ -1,0 +1,274 @@
+{
+  "name": "Data Transformer",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "transform-data",
+        "options": {
+          "rawBody": true
+        },
+        "responseMode": "responseNode"
+      },
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [
+        250,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Получение параметров трансформации\nconst { fileId, transformations } = $input.item.json;\n\nif (!fileId) {\n  throw new Error('File ID is required');\n}\n\nif (!transformations || !Array.isArray(transformations) || transformations.length === 0) {\n  throw new Error('Transformations array is required and must not be empty');\n}\n\n// Путь к файлу с результатами анализа\nconst analysisFilePath = `/portfol/data/analyzed/${fileId}_analysis.json`;\n\n// Возвращаем параметры для следующего шага\nreturn {\n  json: {\n    fileId,\n    transformations,\n    analysisFilePath\n  }\n};"
+      },
+      "name": "Validate Input",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        450,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "filePath": "={{ $json.analysisFilePath }}"
+      },
+      "name": "Read Analysis File",
+      "type": "n8n-nodes-base.readFile",
+      "typeVersion": 1,
+      "position": [
+        650,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Получение данных из предыдущих шагов\nconst { fileId, transformations } = $input.item.json;\n\n// Парсинг результатов анализа\nlet analysis;\ntry {\n  analysis = JSON.parse($input.item.binary.data.data.toString('utf8'));\n} catch (error) {\n  throw new Error(`Failed to parse analysis file: ${error.message}`);\n}\n\n// Получение имени файла из анализа\nconst fileName = analysis.fileName || `${fileId}.csv`;\n\n// Определение пути к исходному CSV файлу\n// Предполагаем, что файл находится в директории raw_data\nconst originalFilePath = `/portfol/data/raw/${fileName}`;\n\nreturn {\n  json: {\n    fileId,\n    fileName,\n    transformations,\n    originalFilePath,\n    analysis\n  }\n};"
+      },
+      "name": "Process Analysis",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        850,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "filePath": "={{ $json.originalFilePath }}"
+      },
+      "name": "Read Original CSV",
+      "type": "n8n-nodes-base.readFile",
+      "typeVersion": 1,
+      "position": [
+        1050,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Получение данных из предыдущих шагов\nconst { fileId, fileName, transformations, analysis } = $input.item.json;\n\n// Получение содержимого CSV файла\nconst csvContent = $input.item.binary.data.data.toString('utf8');\n\n// Парсинг CSV\nconst lines = csvContent.split('\\n');\nconst headers = lines[0].split(',').map(header => header.trim());\n\n// Парсинг данных\nconst data = [];\nfor (let i = 1; i < lines.length; i++) {\n  if (lines[i].trim() === '') continue;\n  \n  const values = lines[i].split(',');\n  const row = {};\n  \n  headers.forEach((header, index) => {\n    row[header] = values[index] ? values[index].trim() : '';\n  });\n  \n  data.push(row);\n}\n\n// Применение трансформаций\nlet transformedData = [...data];\n\n// Функция для применения трансформации к данным\nfunction applyTransformation(data, transformation) {\n  const { type, column, parameters } = transformation;\n  \n  switch (type) {\n    case 'fillna':\n      // Заполнение пропусков\n      return data.map(row => {\n        if (!row[column] || row[column] === '') {\n          row[column] = parameters.value;\n        }\n        return row;\n      });\n      \n    case 'convert_type':\n      // Преобразование типа\n      return data.map(row => {\n        if (parameters.to_type === 'number') {\n          row[column] = isNaN(Number(row[column])) ? row[column] : Number(row[column]);\n        } else if (parameters.to_type === 'string') {\n          row[column] = String(row[column]);\n        } else if (parameters.to_type === 'date') {\n          try {\n            const date = new Date(row[column]);\n            row[column] = date.toISOString().split('T')[0]; // Формат YYYY-MM-DD\n          } catch (e) {\n            // Если не удалось преобразовать, оставляем как есть\n          }\n        }\n        return row;\n      });\n      \n    case 'remove_duplicates':\n      // Удаление дубликатов\n      const seen = new Set();\n      return data.filter(row => {\n        const key = parameters.columns.map(col => row[col]).join('|');\n        if (seen.has(key)) return false;\n        seen.add(key);\n        return true;\n      });\n      \n    case 'rename_column':\n      // Переименование столбца\n      return data.map(row => {\n        row[parameters.new_name] = row[column];\n        if (parameters.new_name !== column) {\n          delete row[column];\n        }\n        return row;\n      });\n      \n    case 'drop_column':\n      // Удаление столбца\n      return data.map(row => {\n        delete row[column];\n        return row;\n      });\n      \n    case 'create_column':\n      // Создание нового столбца на основе выражения\n      return data.map(row => {\n        try {\n          // Простая поддержка базовых операций\n          if (parameters.expression === 'concat') {\n            row[parameters.new_column] = parameters.columns.map(col => row[col]).join(parameters.separator || '');\n          } else if (parameters.expression === 'math') {\n            // Поддержка простых математических операций\n            const val1 = Number(row[parameters.columns[0]]);\n            const val2 = Number(row[parameters.columns[1]]);\n            \n            switch (parameters.operator) {\n              case '+':\n                row[parameters.new_column] = val1 + val2;\n                break;\n              case '-':\n                row[parameters.new_column] = val1 - val2;\n                break;\n              case '*':\n                row[parameters.new_column] = val1 * val2;\n                break;\n              case '/':\n                row[parameters.new_column] = val1 / val2;\n                break;\n              default:\n                break;\n            }\n          }\n        } catch (e) {\n          // В случае ошибки оставляем пустое значение\n          row[parameters.new_column] = '';\n        }\n        return row;\n      });\n      \n    default:\n      // Если тип трансформации не поддерживается, возвращаем данные без изменений\n      return data;\n  }\n}\n\n// Применение всех трансформаций\nfor (const transformation of transformations) {\n  transformedData = applyTransformation(transformedData, transformation);\n}\n\n// Получение новых заголовков после трансформаций\nconst newHeaders = transformedData.length > 0 ? Object.keys(transformedData[0]) : headers;\n\n// Преобразование данных обратно в CSV\nconst newCsvContent = [\n  newHeaders.join(','),\n  ...transformedData.map(row => newHeaders.map(header => row[header] !== undefined ? row[header] : '').join(','))\n].join('\\n');\n\n// Путь для сохранения трансформированных данных\nconst transformedFilePath = `/portfol/data/processed/${fileId}_transformed.csv`;\n\n// Возвращаем результаты\nreturn {\n  json: {\n    fileId,\n    fileName,\n    transformedFilePath,\n    newHeaders,\n    rowCount: transformedData.length,\n    transformations,\n    csvContent: newCsvContent\n  }\n};"
+      },
+      "name": "Apply Transformations",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        1250,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "filePath": "={{ $json.transformedFilePath }}",
+        "fileName": "={{ $json.fileId + '_transformed.csv' }}",
+        "options": {
+          "encoding": "utf8"
+        }
+      },
+      "name": "Save Transformed CSV",
+      "type": "n8n-nodes-base.writeFile",
+      "typeVersion": 1,
+      "position": [
+        1450,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Подготовка данных для SQLite\nconst { fileId, fileName, newHeaders, csvContent, transformations } = $input.item.json;\n\n// Парсинг CSV для получения данных\nconst lines = csvContent.split('\\n');\nconst headers = lines[0].split(',');\n\n// Создание SQL для создания таблицы\nconst tableName = `data_${fileId.replace(/[^a-zA-Z0-9]/g, '_')}`;\n\n// Определение типов столбцов\nconst columnTypes = {};\nheaders.forEach(header => {\n  // По умолчанию используем TEXT\n  columnTypes[header] = 'TEXT';\n});\n\n// Создание SQL для создания таблицы\nconst createTableSQL = `CREATE TABLE IF NOT EXISTS ${tableName} (\\n  ${headers.map(header => `${header.replace(/[^a-zA-Z0-9_]/g, '_')} ${columnTypes[header]}`).join(',\\n')}\\n);`;\n\n// Создание SQL для вставки данных\nconst insertDataSQL = [];\n\nfor (let i = 1; i < lines.length; i++) {\n  if (lines[i].trim() === '') continue;\n  \n  const values = lines[i].split(',');\n  const escapedValues = values.map(value => `'${value.replace(/'/g, \"''\")}'`);\n  \n  insertDataSQL.push(`INSERT INTO ${tableName} (${headers.map(h => h.replace(/[^a-zA-Z0-9_]/g, '_')).join(', ')}) VALUES (${escapedValues.join(', ')});`);\n}\n\n// Возвращаем SQL запросы\nreturn {\n  json: {\n    fileId,\n    fileName,\n    tableName,\n    createTableSQL,\n    insertDataSQL,\n    transformedFilePath: $input.item.json.transformedFilePath,\n    transformations\n  }\n};"
+      },
+      "name": "Prepare SQLite Queries",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        1650,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "={{ $json.createTableSQL }}"
+      },
+      "name": "Create Table",
+      "type": "n8n-nodes-base.sqlite",
+      "typeVersion": 1,
+      "position": [
+        1850,
+        300
+      ],
+      "credentials": {
+        "sqlite": {
+          "id": "1",
+          "name": "SQLite"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "={{ $json.insertDataSQL.join('\\n') }}"
+      },
+      "name": "Insert Data",
+      "type": "n8n-nodes-base.sqlite",
+      "typeVersion": 1,
+      "position": [
+        2050,
+        300
+      ],
+      "credentials": {
+        "sqlite": {
+          "id": "1",
+          "name": "SQLite"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\n  \"fileId\": $json.fileId,\n  \"fileName\": $json.fileName,\n  \"tableName\": $json.tableName,\n  \"transformedFilePath\": $json.transformedFilePath,\n  \"transformations\": $json.transformations,\n  \"download_url\": `/download/${$json.fileId}_transformed.csv`\n}",
+        "options": {}
+      },
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        2250,
+        300
+      ]
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Validate Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Input": {
+      "main": [
+        [
+          {
+            "node": "Read Analysis File",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Analysis File": {
+      "main": [
+        [
+          {
+            "node": "Process Analysis",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Process Analysis": {
+      "main": [
+        [
+          {
+            "node": "Read Original CSV",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Original CSV": {
+      "main": [
+        [
+          {
+            "node": "Apply Transformations",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Apply Transformations": {
+      "main": [
+        [
+          {
+            "node": "Save Transformed CSV",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save Transformed CSV": {
+      "main": [
+        [
+          {
+            "node": "Prepare SQLite Queries",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare SQLite Queries": {
+      "main": [
+        [
+          {
+            "node": "Create Table",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Table": {
+      "main": [
+        [
+          {
+            "node": "Insert Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Insert Data": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  }
+}
