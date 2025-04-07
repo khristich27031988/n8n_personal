@@ -1,0 +1,2 @@
+# Запускать скрипт синхронизации каждый день в 3:00 утра
+0 3 * * * /root/temp_sync_project/sync_to_github.sh >> /root/temp_sync_project/sync.log 2>&1 
