@@ -26,4 +26,27 @@ node_modules/
 
 # Системные файлы
 .DS_Store
-Thumbs.db 
+Thumbs.db
+
+# Базы данных и большие файлы
+*.sqlite
+*.sqlite3
+*.db
+*.db-*
+*.pdf
+*.mp4
+*.avi
+*.mov
+*.mp3
+*.wav
+*.ogg
+*.iso
+
+# Большие каталоги данных
+node_modules/
+data/
+vendor/
+
+# Файлы размером более 50 МБ
+n8n_vps/data/database.sqlite
+n8n_vps/data/*.sqlite 
